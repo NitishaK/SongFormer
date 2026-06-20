@@ -13,6 +13,7 @@ scipy.inf = np.inf
 
 import gradio as gr
 import torch
+import torch.nn
 import librosa
 import json
 import math
@@ -37,12 +38,41 @@ DATASET_LABEL = "SongForm-HX-8Class"
 DATASET_IDS = [5]
 TIME_DUR = 420
 INPUT_SAMPLING_RATE = 24000
+TARGET_LAYER = 10
 
 # Global model variables
 muq_model = None
 musicfm_model = None
 msa_model = None
 device = None
+
+
+def conformer_early_exit(conformer, x, target_layer=TARGET_LAYER):
+    """Return hidden_states[target_layer] without full hidden-state materialization."""
+    original_layers = conformer.layers
+    original_layer_norm = conformer.layer_norm
+    conformer.layers = original_layers[:target_layer]
+    conformer.layer_norm = torch.nn.Identity()
+    try:
+        out = conformer(x, output_hidden_states=False)
+        return out.last_hidden_state
+    finally:
+        conformer.layers = original_layers
+        conformer.layer_norm = original_layer_norm
+
+
+def extract_muq_embedding(muq, audio_seg, target_layer=TARGET_LAYER):
+    x = muq.model.preprocessing(audio_seg, features=["melspec_2048"])
+    x = muq.model.normalize(x)
+    x = muq.model.conv(x["melspec_2048"])
+    return conformer_early_exit(muq.model.conformer, x, target_layer)
+
+
+def extract_musicfm_embedding(musicfm, audio_seg, target_layer=TARGET_LAYER):
+    x = musicfm.preprocessing(audio_seg, features=["melspec_2048"])
+    x = musicfm.normalize(x)
+    x = musicfm.conv(x["melspec_2048"])
+    return conformer_early_exit(musicfm.conformer, x, target_layer)
 
 
 def load_checkpoint(checkpoint_path, device=None):
@@ -148,16 +178,12 @@ def process_audio(audio_path, win_size=420, hop_size=420, num_classes=128):
             audio_seg = audio[start_idx:end_idx]
 
             # Get embeddings
-            muq_output = muq_model(audio_seg.unsqueeze(0), output_hidden_states=True)
-            muq_embd_420s = muq_output["hidden_states"][10]
-            del muq_output
+            muq_embd_420s = extract_muq_embedding(muq_model, audio_seg.unsqueeze(0))
             torch.cuda.empty_cache()
 
-            _, musicfm_hidden_states = musicfm_model.get_predictions(
-                audio_seg.unsqueeze(0)
+            musicfm_embd_420s = extract_musicfm_embedding(
+                musicfm_model, audio_seg.unsqueeze(0)
             )
-            musicfm_embd_420s = musicfm_hidden_states[10]
-            del musicfm_hidden_states
             torch.cuda.empty_cache()
 
             # Process 30-second segments
@@ -177,17 +203,16 @@ def process_audio(audio_path, win_size=420, hop_size=420, num_classes=128):
                     continue
 
                 wraped_muq_embd_30s.append(
-                    muq_model(
-                        audio[start_idx_30s:end_idx_30s].unsqueeze(0),
-                        output_hidden_states=True,
-                    )["hidden_states"][10]
+                    extract_muq_embedding(
+                        muq_model, audio[start_idx_30s:end_idx_30s].unsqueeze(0)
+                    )
                 )
                 torch.cuda.empty_cache()
 
                 wraped_musicfm_embd_30s.append(
-                    musicfm_model.get_predictions(
-                        audio[start_idx_30s:end_idx_30s].unsqueeze(0)
-                    )[1][10]
+                    extract_musicfm_embedding(
+                        musicfm_model, audio[start_idx_30s:end_idx_30s].unsqueeze(0)
+                    )
                 )
                 torch.cuda.empty_cache()
 
