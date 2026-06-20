@@ -4,9 +4,15 @@ import json
 import math
 import multiprocessing as mp
 import os
+import sys
 import time
 from argparse import Namespace
 from pathlib import Path
+
+# Ensure musicfm internal modules are importable for is_flash=True.
+sys.path.insert(
+    0, os.path.join(os.path.dirname(__file__), "..", "..", "third_party", "musicfm")
+)
 
 # monkey patch to fix issues in msaf
 import scipy
@@ -35,6 +41,13 @@ DATASET_IDS = [5]
 
 TIME_DUR = 420
 INPUT_SAMPLING_RATE = 24000
+
+
+def _flash_attention_available(device_id=0):
+    """Flash attention requires CUDA SM80+ GPUs."""
+    if not torch.cuda.is_available():
+        return False
+    return torch.cuda.get_device_capability(device_id)[0] >= 8
 
 from dataset.label2id import DATASET_ID_ALLOWED_LABEL_IDS, DATASET_LABEL_TO_DATASET_ID
 from postprocessing.functional import postprocess_functional_structure
@@ -117,6 +130,7 @@ def rule_post_processing(msa_list):
 def inference(rank, queue_input: mp.Queue, queue_output: mp.Queue, args):
     """Run inference on the input audio"""
     device = f"cuda:{rank}"
+    use_flash = _flash_attention_available(rank)
 
     # MuQ model loading (this will automatically fetch the checkpoint from huggingface)
     muq = MuQ.from_pretrained("OpenMuQ/MuQ-large-msd-iter")
@@ -124,7 +138,7 @@ def inference(rank, queue_input: mp.Queue, queue_output: mp.Queue, args):
 
     # MusicFM model loading
     musicfm = MusicFM25Hz(
-        is_flash=False,
+        is_flash=use_flash,
         stat_path=os.path.join(MUSICFM_HOME_PATH, "msd_stats.json"),
         model_path=os.path.join(MUSICFM_HOME_PATH, "pretrained_msd.pt"),
     )

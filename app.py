@@ -3,6 +3,7 @@ import sys
 
 os.chdir(os.path.join("src", "SongFormer"))
 sys.path.append(os.path.join("..", "third_party"))
+sys.path.append(os.path.join("..", "third_party", "musicfm"))
 sys.path.append(".")
 
 # monkey patch to fix issues in msaf
@@ -39,6 +40,13 @@ DATASET_IDS = [5]
 TIME_DUR = 420
 INPUT_SAMPLING_RATE = 24000
 
+
+def _flash_attention_available():
+    """Flash attention requires CUDA SM80+ GPUs."""
+    if not torch.cuda.is_available():
+        return False
+    return torch.cuda.get_device_capability()[0] >= 8
+
 # Global model variables
 muq_model = None
 musicfm_model = None
@@ -68,6 +76,7 @@ def initialize_models(model_name: str, checkpoint: str, config_path: str):
 
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    use_flash = _flash_attention_available()
 
     # Load MuQ
     muq_model = MuQ.from_pretrained("OpenMuQ/MuQ-large-msd-iter")
@@ -75,7 +84,7 @@ def initialize_models(model_name: str, checkpoint: str, config_path: str):
 
     # Load MusicFM
     musicfm_model = MusicFM25Hz(
-        is_flash=False,
+        is_flash=use_flash,
         stat_path=os.path.join(MUSICFM_HOME_PATH, "msd_stats.json"),
         model_path=os.path.join(MUSICFM_HOME_PATH, "pretrained_msd.pt"),
     )
