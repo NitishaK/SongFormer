@@ -41,6 +41,7 @@ DATASET_IDS = [5]
 
 TIME_DUR = 420
 INPUT_SAMPLING_RATE = 24000
+INFERENCE_DTYPE = torch.float16
 
 
 def _flash_attention_available(device_id=0):
@@ -134,7 +135,7 @@ def inference(rank, queue_input: mp.Queue, queue_output: mp.Queue, args):
 
     # MuQ model loading (this will automatically fetch the checkpoint from huggingface)
     muq = MuQ.from_pretrained("OpenMuQ/MuQ-large-msd-iter")
-    muq = muq.to(device).eval()
+    muq = muq.to(device=device, dtype=INFERENCE_DTYPE).eval()
 
     # MusicFM model loading
     musicfm = MusicFM25Hz(
@@ -142,8 +143,7 @@ def inference(rank, queue_input: mp.Queue, queue_output: mp.Queue, args):
         stat_path=os.path.join(MUSICFM_HOME_PATH, "msd_stats.json"),
         model_path=os.path.join(MUSICFM_HOME_PATH, "pretrained_msd.pt"),
     )
-    musicfm = musicfm.to(device)
-    musicfm.eval()
+    musicfm = musicfm.to(device=device, dtype=INFERENCE_DTYPE).eval()
 
     # Custom model loading based on the config
     module = importlib.import_module("models." + str(args.model))
@@ -161,7 +161,7 @@ def inference(rank, queue_input: mp.Queue, queue_output: mp.Queue, args):
         logger.info("No EMA model parameters found, using original model")
         model.load_state_dict(ckpt["model"])
 
-    model.to(device)
+    model.to(device=device, dtype=INFERENCE_DTYPE)
     model.eval()
 
     num_classes = args.num_classes
@@ -181,7 +181,7 @@ def inference(rank, queue_input: mp.Queue, queue_output: mp.Queue, args):
             try:
                 # Loading the audio file
                 wav, sr = librosa.load(item, sr=INPUT_SAMPLING_RATE)
-                audio = torch.tensor(wav).to(device)
+                audio = torch.tensor(wav, dtype=INFERENCE_DTYPE).to(device)
 
                 win_size = args.win_size
                 hop_size = args.hop_size

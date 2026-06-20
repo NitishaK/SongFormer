@@ -46,6 +46,7 @@ def _flash_attention_available():
     if not torch.cuda.is_available():
         return False
     return torch.cuda.get_device_capability()[0] >= 8
+INFERENCE_DTYPE = torch.float16
 
 # Global model variables
 muq_model = None
@@ -80,7 +81,7 @@ def initialize_models(model_name: str, checkpoint: str, config_path: str):
 
     # Load MuQ
     muq_model = MuQ.from_pretrained("OpenMuQ/MuQ-large-msd-iter")
-    muq_model = muq_model.to(device).eval()
+    muq_model = muq_model.to(device=device, dtype=INFERENCE_DTYPE).eval()
 
     # Load MusicFM
     musicfm_model = MusicFM25Hz(
@@ -88,7 +89,7 @@ def initialize_models(model_name: str, checkpoint: str, config_path: str):
         stat_path=os.path.join(MUSICFM_HOME_PATH, "msd_stats.json"),
         model_path=os.path.join(MUSICFM_HOME_PATH, "pretrained_msd.pt"),
     )
-    musicfm_model = musicfm_model.to(device).eval()
+    musicfm_model = musicfm_model.to(device=device, dtype=INFERENCE_DTYPE).eval()
 
     # Load MSA model
     module = importlib.import_module("models." + str(model_name))
@@ -104,7 +105,7 @@ def initialize_models(model_name: str, checkpoint: str, config_path: str):
     else:
         msa_model.load_state_dict(ckpt["model"])
 
-    msa_model.to(device).eval()
+    msa_model.to(device=device, dtype=INFERENCE_DTYPE).eval()
 
     return hp
 
@@ -120,7 +121,7 @@ def process_audio(audio_path, win_size=420, hop_size=420, num_classes=128):
 
     # Load audio
     wav, sr = librosa.load(audio_path, sr=INPUT_SAMPLING_RATE)
-    audio = torch.tensor(wav).to(device)
+    audio = torch.tensor(wav, dtype=INFERENCE_DTYPE).to(device)
 
     # Prepare output
     total_len = (

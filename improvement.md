@@ -1,52 +1,57 @@
-# Improvement 2: Enable Flash Attention for MusicFM (with Safe Fallback)
+# Improvement 3: FP16 Inference for SSL + SongFormer Models
 
 ## Why this change exists
 
-MusicFM was instantiated with `is_flash=False`, forcing the standard attention
-path that materializes large attention score tensors in VRAM.
+The inference path previously used default FP32 tensors for:
 
-For long sequence inference, this can become a major memory bottleneck and
-contribute to OOM risk.
+- MuQ
+- MusicFM
+- SongFormer inference model
+- Loaded waveform tensors
+
+FP32 is memory-expensive for this workload and contributes directly to high GPU
+memory pressure during embedding extraction and model inference.
 
 ## What was changed
 
-- Added runtime capability checks:
-  - `app.py`: `_flash_attention_available()`
-  - `src/SongFormer/infer/infer.py`: `_flash_attention_available(device_id)`
-- Switched MusicFM construction from fixed `is_flash=False` to:
-  - `is_flash=use_flash` where `use_flash` is derived from GPU capability.
-- Added MusicFM module-path bootstrap in both entrypoints so internal imports
-  resolve correctly when flash mode is enabled.
+- Introduced `INFERENCE_DTYPE = torch.float16` in:
+  - `app.py`
+  - `src/SongFormer/infer/infer.py`
+- Updated model placement to use explicit dtype:
+  - `.to(device=device, dtype=INFERENCE_DTYPE).eval()`
+- Updated waveform tensor creation to use FP16 at source:
+  - `torch.tensor(wav, dtype=INFERENCE_DTYPE).to(device)`
+- Updated SongFormer inference model placement to match FP16 inference dtype.
 
-## Compatibility design
+## Design intent
 
-Flash attention is enabled only when all required runtime conditions are met:
+The dtype constant centralizes precision control so operations teams can switch
+between FP16/BF16/FP32 with a single configuration edit in each runtime path.
 
-- CUDA is available
-- Device compute capability is SM80 or newer (`major >= 8`)
-
-Otherwise, the code falls back to the original non-flash path automatically.
-
-This keeps behavior safe on mixed hardware fleets and developer machines.
+This change is intended to reduce memory footprint without changing inference
+pipeline semantics or output schema.
 
 ## Correctness notes
 
-This optimization is intended to preserve model function while improving memory
-behavior and performance characteristics.
+FP16 is a lossy numeric representation relative to FP32. In practice for this
+task, expected impact is minimal because final decisions are based on robust
+peak/argmax logic rather than fragile exact-value comparisons.
 
-Expected output behavior: same segmentation quality and structure output format.
-Minor floating-point differences from kernel implementation details are possible
-but should not materially affect boundaries/labels in normal use.
+Expected behavior:
+
+- Same output structure and labels in normal operation.
+- Potential tiny logit-level numeric drift that should not materially affect
+  boundary and class decisions for typical confidence margins.
 
 ## Operational impact
 
-- Lower peak VRAM on supported GPUs during MusicFM attention blocks.
-- Potential throughput/latency improvement from fused attention kernels.
-- No required CLI/API contract change.
+- Roughly ~50% reduction in tensor memory for many activations/weights.
+- Lower chance of OOM on memory-constrained GPUs.
+- Potential throughput gains from tensor core acceleration on supported hardware.
 
 ## Reviewer checklist
 
-- Confirm fallback behavior on non-SM80 GPUs.
-- Confirm flash path activates on SM80+ GPUs.
-- Run representative inference and verify output parity expectations.
-- Check memory profile for reduced peak usage on flash-capable hardware.
+- Run a representative audio batch before/after FP16 switch.
+- Compare output labels and boundary timestamps against FP32 baseline.
+- Validate no runtime dtype mismatch errors on target GPU fleet.
+- Confirm peak memory reduction with runtime profiling tools.
