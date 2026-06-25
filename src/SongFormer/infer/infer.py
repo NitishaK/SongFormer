@@ -38,6 +38,7 @@ INPUT_SAMPLING_RATE = 24000
 
 from dataset.label2id import DATASET_ID_ALLOWED_LABEL_IDS, DATASET_LABEL_TO_DATASET_ID
 from postprocessing.functional import postprocess_functional_structure
+from utils.embedding import extract_muq_embedding, extract_musicfm_embedding
 
 
 def get_processed_ids(output_path):
@@ -195,18 +196,12 @@ def inference(rank, queue_input: mp.Queue, queue_output: mp.Queue, args):
                         continue
                     audio_seg = audio[start_idx:end_idx]
 
-                    # MuQ embedding
-                    muq_output = muq(audio_seg.unsqueeze(0), output_hidden_states=True)
-                    muq_embd_420s = muq_output["hidden_states"][10]
-                    del muq_output
+                    muq_embd_420s = extract_muq_embedding(muq, audio_seg.unsqueeze(0))
                     torch.cuda.empty_cache()
 
-                    # MusicFM embedding
-                    _, musicfm_hidden_states = musicfm.get_predictions(
-                        audio_seg.unsqueeze(0)
+                    musicfm_embd_420s = extract_musicfm_embedding(
+                        musicfm, audio_seg.unsqueeze(0)
                     )
-                    musicfm_embd_420s = musicfm_hidden_states[10]
-                    del musicfm_hidden_states
                     torch.cuda.empty_cache()
 
                     wraped_muq_embd_30s = []
@@ -224,16 +219,16 @@ def inference(rank, queue_input: mp.Queue, queue_output: mp.Queue, args):
                         if end_idx_30s - start_idx_30s <= 1024:
                             continue
                         wraped_muq_embd_30s.append(
-                            muq(
-                                audio[start_idx_30s:end_idx_30s].unsqueeze(0),
-                                output_hidden_states=True,
-                            )["hidden_states"][10]
+                            extract_muq_embedding(
+                                muq, audio[start_idx_30s:end_idx_30s].unsqueeze(0)
+                            )
                         )
                         torch.cuda.empty_cache()
                         wraped_musicfm_embd_30s.append(
-                            musicfm.get_predictions(
-                                audio[start_idx_30s:end_idx_30s].unsqueeze(0)
-                            )[1][10]
+                            extract_musicfm_embedding(
+                                musicfm,
+                                audio[start_idx_30s:end_idx_30s].unsqueeze(0),
+                            )
                         )
                         torch.cuda.empty_cache()
 

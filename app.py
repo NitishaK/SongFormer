@@ -13,7 +13,6 @@ scipy.inf = np.inf
 
 import gradio as gr
 import torch
-import torch.nn
 import librosa
 import json
 import math
@@ -29,6 +28,7 @@ from musicfm.model.musicfm_25hz import MusicFM25Hz
 from postprocessing.functional import postprocess_functional_structure
 from dataset.label2id import DATASET_ID_ALLOWED_LABEL_IDS, DATASET_LABEL_TO_DATASET_ID
 from utils.fetch_pretrained import download_all
+from utils.embedding import extract_muq_embedding, extract_musicfm_embedding
 
 # Constants
 MUSICFM_HOME_PATH = os.path.join("ckpts", "MusicFM")
@@ -38,41 +38,12 @@ DATASET_LABEL = "SongForm-HX-8Class"
 DATASET_IDS = [5]
 TIME_DUR = 420
 INPUT_SAMPLING_RATE = 24000
-TARGET_LAYER = 10
 
 # Global model variables
 muq_model = None
 musicfm_model = None
 msa_model = None
 device = None
-
-
-def conformer_early_exit(conformer, x, target_layer=TARGET_LAYER):
-    """Return hidden_states[target_layer] without full hidden-state materialization."""
-    original_layers = conformer.layers
-    original_layer_norm = conformer.layer_norm
-    conformer.layers = original_layers[:target_layer]
-    conformer.layer_norm = torch.nn.Identity()
-    try:
-        out = conformer(x, output_hidden_states=False)
-        return out.last_hidden_state
-    finally:
-        conformer.layers = original_layers
-        conformer.layer_norm = original_layer_norm
-
-
-def extract_muq_embedding(muq, audio_seg, target_layer=TARGET_LAYER):
-    x = muq.model.preprocessing(audio_seg, features=["melspec_2048"])
-    x = muq.model.normalize(x)
-    x = muq.model.conv(x["melspec_2048"])
-    return conformer_early_exit(muq.model.conformer, x, target_layer)
-
-
-def extract_musicfm_embedding(musicfm, audio_seg, target_layer=TARGET_LAYER):
-    x = musicfm.preprocessing(audio_seg, features=["melspec_2048"])
-    x = musicfm.normalize(x)
-    x = musicfm.conv(x["melspec_2048"])
-    return conformer_early_exit(musicfm.conformer, x, target_layer)
 
 
 def load_checkpoint(checkpoint_path, device=None):
