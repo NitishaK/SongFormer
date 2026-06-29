@@ -53,6 +53,7 @@ def _flash_attention_available(device_id=0):
 from dataset.label2id import DATASET_ID_ALLOWED_LABEL_IDS, DATASET_LABEL_TO_DATASET_ID
 from postprocessing.functional import postprocess_functional_structure
 from utils.embedding import extract_muq_embedding, extract_musicfm_embedding
+from utils.chunked_attention import apply_chunked_attention
 
 
 def get_processed_ids(output_path):
@@ -144,6 +145,10 @@ def inference(rank, queue_input: mp.Queue, queue_output: mp.Queue, args):
         model_path=os.path.join(MUSICFM_HOME_PATH, "pretrained_msd.pt"),
     )
     musicfm = musicfm.to(device=device, dtype=INFERENCE_DTYPE).eval()
+
+    if not use_flash:
+        apply_chunked_attention(muq.model.conformer, chunk_size=1024)
+        apply_chunked_attention(musicfm.conformer, chunk_size=1024)
 
     # Custom model loading based on the config
     module = importlib.import_module("models." + str(args.model))

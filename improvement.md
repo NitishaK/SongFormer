@@ -1,57 +1,51 @@
-# Improvement 3: FP16 Inference for SSL + SongFormer Models
+# Improvement 4: Chunked Attention Fallback for Non-Flash GPUs
 
 ## Why this change exists
 
-The inference path previously used default FP32 tensors for:
+When Flash Attention is unavailable, standard self-attention can materialize
+very large score tensors (`[batch, heads, N, N]`) for long audio sequences.
 
-- MuQ
-- MusicFM
-- SongFormer inference model
-- Loaded waveform tensors
-
-FP32 is memory-expensive for this workload and contributes directly to high GPU
-memory pressure during embedding extraction and model inference.
+That memory pattern is often the dominant VRAM spike in conformer inference and
+is a frequent source of OOM on older or lower-memory GPUs.
 
 ## What was changed
 
-- Introduced `INFERENCE_DTYPE = torch.float16` in:
+- Added new utility module:
+  - `src/SongFormer/utils/chunked_attention.py`
+- Implemented:
+  - `chunked_scaled_dot_product_attention(...)`
+  - `_make_chunked_forward(...)`
+  - `apply_chunked_attention(...)`
+- Integrated fallback into both runtime paths:
   - `app.py`
   - `src/SongFormer/infer/infer.py`
-- Updated model placement to use explicit dtype:
-  - `.to(device=device, dtype=INFERENCE_DTYPE).eval()`
-- Updated waveform tensor creation to use FP16 at source:
-  - `torch.tensor(wav, dtype=INFERENCE_DTYPE).to(device)`
-- Updated SongFormer inference model placement to match FP16 inference dtype.
 
-## Design intent
+Integration behavior:
 
-The dtype constant centralizes precision control so operations teams can switch
-between FP16/BF16/FP32 with a single configuration edit in each runtime path.
+1. Detect whether Flash Attention is available.
+2. If available: keep flash path.
+3. If not available: monkey-patch conformer attention layers to chunked exact
+   attention with `chunk_size=1024`.
 
-This change is intended to reduce memory footprint without changing inference
-pipeline semantics or output schema.
+## Correctness model
 
-## Correctness notes
+This is an exact-attention fallback, not sparse/approximate attention:
 
-FP16 is a lossy numeric representation relative to FP32. In practice for this
-task, expected impact is minimal because final decisions are based on robust
-peak/argmax logic rather than fragile exact-value comparisons.
+- Each query chunk still attends to the full key/value sequence.
+- Only computation order and memory layout are changed.
 
-Expected behavior:
-
-- Same output structure and labels in normal operation.
-- Potential tiny logit-level numeric drift that should not materially affect
-  boundary and class decisions for typical confidence margins.
+Expected output behavior: equivalent segmentation behavior with substantially
+lower peak memory in non-flash mode.
 
 ## Operational impact
 
-- Roughly ~50% reduction in tensor memory for many activations/weights.
-- Lower chance of OOM on memory-constrained GPUs.
-- Potential throughput gains from tensor core acceleration on supported hardware.
+- Major reduction in peak attention memory on non-SM80 hardware.
+- Makes long-window inference feasible on more GPUs.
+- Potential small latency overhead due to chunked loop execution.
 
 ## Reviewer checklist
 
-- Run a representative audio batch before/after FP16 switch.
-- Compare output labels and boundary timestamps against FP32 baseline.
-- Validate no runtime dtype mismatch errors on target GPU fleet.
-- Confirm peak memory reduction with runtime profiling tools.
+- Confirm patch applies only when flash is unavailable.
+- Validate representative audio output parity with baseline behavior.
+- Measure peak VRAM before/after on non-flash hardware.
+- Check latency impact and document acceptable production threshold.

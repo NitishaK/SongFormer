@@ -30,6 +30,7 @@ from postprocessing.functional import postprocess_functional_structure
 from dataset.label2id import DATASET_ID_ALLOWED_LABEL_IDS, DATASET_LABEL_TO_DATASET_ID
 from utils.fetch_pretrained import download_all
 from utils.embedding import extract_muq_embedding, extract_musicfm_embedding
+from utils.chunked_attention import apply_chunked_attention
 
 # Constants
 MUSICFM_HOME_PATH = os.path.join("ckpts", "MusicFM")
@@ -90,6 +91,10 @@ def initialize_models(model_name: str, checkpoint: str, config_path: str):
         model_path=os.path.join(MUSICFM_HOME_PATH, "pretrained_msd.pt"),
     )
     musicfm_model = musicfm_model.to(device=device, dtype=INFERENCE_DTYPE).eval()
+
+    if not use_flash:
+        apply_chunked_attention(muq_model.model.conformer, chunk_size=1024)
+        apply_chunked_attention(musicfm_model.conformer, chunk_size=1024)
 
     # Load MSA model
     module = importlib.import_module("models." + str(model_name))
