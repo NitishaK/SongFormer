@@ -223,8 +223,9 @@ def inference(rank, queue_input: mp.Queue, queue_output: mp.Queue, args):
                     )
                     torch.cuda.empty_cache()
 
-                    wraped_muq_embd_30s = []
-                    wraped_musicfm_embd_30s = []
+                    muq_30s_chunks = []
+                    musicfm_30s_chunks = []
+                    total_30s_frames = 0
 
                     for idx_30s in range(i, i + hop_size, 30):
                         start_idx_30s = idx_30s * INPUT_SAMPLING_RATE
@@ -237,24 +238,38 @@ def inference(rank, queue_input: mp.Queue, queue_output: mp.Queue, args):
                             break
                         if end_idx_30s - start_idx_30s <= 1024:
                             continue
-                        wraped_muq_embd_30s.append(
-                            extract_muq_embedding(
-                                muq, audio[start_idx_30s:end_idx_30s].unsqueeze(0)
-                            )
+                        muq_chunk = extract_muq_embedding(
+                            muq, audio[start_idx_30s:end_idx_30s].unsqueeze(0)
                         )
+                        muq_30s_chunks.append(muq_chunk)
+                        total_30s_frames += muq_chunk.shape[1]
+                        del muq_chunk
                         torch.cuda.empty_cache()
-                        wraped_musicfm_embd_30s.append(
-                            extract_musicfm_embedding(
-                                musicfm,
-                                audio[start_idx_30s:end_idx_30s].unsqueeze(0),
-                            )
+                        musicfm_chunk = extract_musicfm_embedding(
+                            musicfm,
+                            audio[start_idx_30s:end_idx_30s].unsqueeze(0),
                         )
+                        musicfm_30s_chunks.append(musicfm_chunk)
+                        del musicfm_chunk
                         torch.cuda.empty_cache()
 
-                    wraped_muq_embd_30s = torch.concatenate(wraped_muq_embd_30s, dim=1)
-                    wraped_musicfm_embd_30s = torch.concatenate(
-                        wraped_musicfm_embd_30s, dim=1
+                    wraped_muq_embd_30s = torch.empty(
+                        [1, total_30s_frames, muq_30s_chunks[0].shape[2]],
+                        dtype=muq_30s_chunks[0].dtype,
+                        device=muq_30s_chunks[0].device,
                     )
+                    wraped_musicfm_embd_30s = torch.empty(
+                        [1, total_30s_frames, musicfm_30s_chunks[0].shape[2]],
+                        dtype=musicfm_30s_chunks[0].dtype,
+                        device=musicfm_30s_chunks[0].device,
+                    )
+                    offset = 0
+                    for muq_c, mfm_c in zip(muq_30s_chunks, musicfm_30s_chunks):
+                        n_frames = muq_c.shape[1]
+                        wraped_muq_embd_30s[:, offset : offset + n_frames, :] = muq_c
+                        wraped_musicfm_embd_30s[:, offset : offset + n_frames, :] = mfm_c
+                        offset += n_frames
+                    del muq_30s_chunks, musicfm_30s_chunks
                     all_embds = [
                         wraped_musicfm_embd_30s,
                         wraped_muq_embd_30s,

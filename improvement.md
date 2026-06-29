@@ -1,51 +1,53 @@
-# Improvement 4: Chunked Attention Fallback for Non-Flash GPUs
+# Improvement 5: Pre-Allocate 30s Embedding Buffers (Avoid Concat Peak)
 
 ## Why this change exists
 
-When Flash Attention is unavailable, standard self-attention can materialize
-very large score tensors (`[batch, heads, N, N]`) for long audio sequences.
+The previous implementation accumulated per-chunk embeddings in Python lists and
+then called `torch.concatenate(...)` to build the final wrapped embedding.
 
-That memory pattern is often the dominant VRAM spike in conformer inference and
-is a frequent source of OOM on older or lower-memory GPUs.
+That pattern creates a transient memory peak:
+
+- all chunk tensors still exist
+- plus a new contiguous destination tensor allocated by `concatenate`
+
+During heavy inference windows, this temporary duplication can be large enough
+to trigger OOM even when steady-state memory is otherwise acceptable.
 
 ## What was changed
 
-- Added new utility module:
-  - `src/SongFormer/utils/chunked_attention.py`
-- Implemented:
-  - `chunked_scaled_dot_product_attention(...)`
-  - `_make_chunked_forward(...)`
-  - `apply_chunked_attention(...)`
-- Integrated fallback into both runtime paths:
-  - `app.py`
-  - `src/SongFormer/infer/infer.py`
+In both runtime paths:
 
-Integration behavior:
+- `app.py`
+- `src/SongFormer/infer/infer.py`
 
-1. Detect whether Flash Attention is available.
-2. If available: keep flash path.
-3. If not available: monkey-patch conformer attention layers to chunked exact
-   attention with `chunk_size=1024`.
+the 30s embedding construction logic was refactored to:
 
-## Correctness model
+1. Collect chunk tensors and sum `total_30s_frames`.
+2. Pre-allocate destination tensors once with `torch.empty(...)`.
+3. Copy each chunk into destination slices using explicit offsets.
+4. Free chunk lists immediately after copy.
 
-This is an exact-attention fallback, not sparse/approximate attention:
+This keeps peak memory lower than append-then-concatenate under equivalent load.
 
-- Each query chunk still attends to the full key/value sequence.
-- Only computation order and memory layout are changed.
+## Correctness notes
 
-Expected output behavior: equivalent segmentation behavior with substantially
-lower peak memory in non-flash mode.
+This is a memory-allocation strategy change, not a model/math change:
+
+- Values written into destination slices are the same values previously passed to
+  `torch.concatenate`.
+- Tensor content and downstream inference semantics are intended to remain
+  unchanged.
+
+Expected output behavior: identical inference outputs, lower transient memory.
 
 ## Operational impact
 
-- Major reduction in peak attention memory on non-SM80 hardware.
-- Makes long-window inference feasible on more GPUs.
-- Potential small latency overhead due to chunked loop execution.
+- Reduced short-lived VRAM spikes during wrapped embedding assembly.
+- Better stability margin on GPUs with constrained memory.
+- No API/format change for output artifacts.
 
 ## Reviewer checklist
 
-- Confirm patch applies only when flash is unavailable.
-- Validate representative audio output parity with baseline behavior.
-- Measure peak VRAM before/after on non-flash hardware.
-- Check latency impact and document acceptable production threshold.
+- Confirm wrapped embedding shapes match previous implementation.
+- Run representative inference and compare output parity.
+- Profile peak VRAM around the 30s wrapping section before/after change.
